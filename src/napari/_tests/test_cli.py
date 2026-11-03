@@ -160,6 +160,99 @@ def test_cli_passes_kwargs_stack(
     mock_run.assert_called_once_with(gui_exceptions=True)
 
 
+def test_cli_initial_fit_uses_shown_canvas_size(qtbot, monkeypatch):
+    """Test that CLI file loading fits the image to the shown canvas."""
+    import numpy as np
+
+    from napari._qt.qt_viewer import QtViewer
+    from napari.components.viewer_model import ViewerModel
+    from napari.settings import get_settings
+
+    settings = get_settings()
+    settings.application.first_time = False
+    settings.application.window_size = (1400, 1000)
+    settings.application.window_position = (0, 0)
+
+    fit_sizes = []
+    open_sizes = []
+    window_visible_when_opened = []
+    original_reset_view = ViewerModel.reset_view
+
+    def record_fit_size(viewer, *args, **kwargs):
+        fit_sizes.append(viewer.canvas.size)
+        return original_reset_view(viewer, *args, **kwargs)
+
+    def open_image(qt_viewer, _filenames, **_kwargs):
+        open_sizes.append(qt_viewer.viewer.canvas.size)
+        window_visible_when_opened.append(
+            qt_viewer.viewer.window._qt_window.isVisible()
+        )
+        qt_viewer.viewer.add_image(np.zeros((200, 2000)))
+
+    def clear_qt_viewer_instances(window):
+        window._qt_viewer._instances.clear()
+
+    monkeypatch.setattr(sys, 'argv', ['napari', 'test.tif'])
+    monkeypatch.setattr(
+        __main__, '_run_configured_startup_script', lambda: None
+    )
+    monkeypatch.setattr(ViewerModel, 'reset_view', record_fit_size)
+    monkeypatch.setattr(QtViewer, '_qt_open', open_image)
+
+    viewer = __main__._build_viewer()
+    qtbot.addWidget(
+        viewer.window._qt_window,
+        before_close_func=clear_qt_viewer_instances,
+    )
+
+    assert len(fit_sizes) == 1
+    assert open_sizes[0] != (800, 600)
+    assert fit_sizes == open_sizes
+    assert window_visible_when_opened == [True]
+
+
+@pytest.mark.parametrize(
+    ('open_file', 'welcome_visible'),
+    [(False, True), (True, False)],
+)
+def test_cli_welcome_screen_visibility(
+    qtbot, monkeypatch, open_file, welcome_visible
+):
+    """Test that CLI shows the welcome screen only when no layer was opened."""
+    import numpy as np
+
+    from napari._qt.qt_viewer import QtViewer
+
+    welcome_screen_states = []
+
+    def open_image(qt_viewer, filenames, **_kwargs):
+        welcome_screen_states.append(qt_viewer.show_welcome_screen)
+        if filenames:
+            qt_viewer.viewer.add_image(np.zeros((10, 10)))
+
+    def clear_qt_viewer_instances(window):
+        window._qt_viewer._instances.clear()
+
+    monkeypatch.setattr(
+        sys, 'argv', ['napari'] + (['test.tif'] if open_file else [])
+    )
+    monkeypatch.setattr(
+        __main__, '_run_configured_startup_script', lambda: None
+    )
+    monkeypatch.setattr(QtViewer, '_qt_open', open_image)
+
+    viewer = __main__._build_viewer()
+    qtbot.addWidget(
+        viewer.window._qt_window,
+        before_close_func=clear_qt_viewer_instances,
+    )
+
+    assert welcome_screen_states == [False]
+    assert (
+        viewer.window._qt_viewer._welcome_widget.isVisible() is welcome_visible
+    )
+
+
 def test_cli_retains_viewer_ref(mock_run, monkeypatch, make_napari_viewer):
     """Test that napari.__main__ is retaining a reference to the viewer."""
     mocked_viewer = (
